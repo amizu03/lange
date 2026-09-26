@@ -171,7 +171,6 @@ fn main() -> eframe::Result {
             Ok(Box::new(ui::CaptionApp {
                 captions: captions_ui,
                 current_entry: None,
-                word_list: Arc::new(Mutex::new(Vec::new())),
                 toasts: Toasts::new()
                     .anchor(Align2::RIGHT_BOTTOM, (-10.0, -10.0)) // 10 units from the bottom right corner
                     .direction(egui::Direction::BottomUp),

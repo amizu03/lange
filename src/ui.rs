@@ -16,7 +16,6 @@ const SMALL_TEXT_SIZE: f32 = 15.0;
 pub struct CaptionApp {
     pub captions: Arc<Mutex<Vec<Vec<CedictEntry>>>>,
     pub current_entry: Option<(CedictEntry, String)>,
-    pub word_list: Arc<Mutex<Vec<CedictEntry>>>,
     pub config: Arc<Mutex<Config>>,
     pub toasts: Toasts,
     pub in_settings: bool,
@@ -27,6 +26,7 @@ pub struct CaptionApp {
 }
 
 const CONFIG_PATH: &str = "out/config.json";
+const ANKI_PATH: &str = "out/deck.apkg";
 
 fn format_pinyin(entry: &CedictEntry) -> String {
     match &entry.pinyin {
@@ -256,7 +256,7 @@ impl eframe::App for CaptionApp {
                             {
                                 let anki = self.config.lock().unwrap();
 
-                                anki.export(CONFIG_PATH);
+                                anki.export(ANKI_PATH);
                             }
 
                             self.toasts.add(Toast {
@@ -304,7 +304,42 @@ impl eframe::App for CaptionApp {
                                 );
 
                                 if response.secondary_clicked() {
-                                    self.word_list.lock().unwrap().push(entry.clone());
+                                    let mut config = self.config.lock().unwrap();
+
+                                    if config.lookup(&entry.simplified).is_none() {
+                                        config.insert(CEDictEntry {
+                                            zh: entry.simplified.clone(),
+                                            pinyin: format_pinyin(entry),
+                                            definition: entry
+                                                .definitions
+                                                .as_ref()
+                                                .map_or(String::new(), |s| s.join("\n")),
+                                        });
+
+                                        self.toasts.add(Toast {
+                                            text: RichText::new("Added card")
+                                                .size(SMALL_TEXT_SIZE)
+                                                .monospace()
+                                                .into(),
+                                            kind: ToastKind::Success,
+                                            options: ToastOptions::default()
+                                                .duration_in_seconds(5.0)
+                                                .show_progress(true),
+                                            ..Default::default()
+                                        });
+                                    } else {
+                                        self.toasts.add(Toast {
+                                            text: RichText::new("Already exists")
+                                                .size(SMALL_TEXT_SIZE)
+                                                .monospace()
+                                                .into(),
+                                            kind: ToastKind::Info,
+                                            options: ToastOptions::default()
+                                                .duration_in_seconds(5.0)
+                                                .show_progress(true),
+                                            ..Default::default()
+                                        });
+                                    }
                                 } else if response.clicked() {
                                     self.current_entry =
                                         Some((entry.clone(), format_pinyin(entry)));
