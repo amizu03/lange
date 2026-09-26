@@ -24,3 +24,8 @@ target
 # Added by cargo
 
 /target
+
+# Files generated at runtime
+assets/
+out/
+

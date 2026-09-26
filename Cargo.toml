@@ -1,10 +1,51 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "lange"
 version = "0.1.0"
 edition = "2024"
 
+[unstable]
+mtime-on-use = true
+build-std = ["std", "core", "alloc"]
+build-std-features = ["build-std-features=panic_immediate_abort"]
+
+# Reduce binary size
+[profile.release]
+opt-level = 3
+codegen-units = 1
+control-flow-guard = false
+debug-assertions = false
+# embed-bitcode = false
+# force-frame-pointers = false
+# force-unwind-tables = false
+lto = true
+overflow-checks = false
+panic = "abort"
+# strip = "symbols" 
+debug = true
+split-debuginfo = "packed"
+rustflags = [
+  "-Cjump-tables=false",
+  "-Ctarget-feature=+fma",
+  "-Ctarget-feature=+avx",
+  "-Ctarget-feature=+avx2",
+  "-Ccontrol-flow-guard=off",
+  "-Cforce-frame-pointers=off",
+  "-Cforce-unwind-tables=on",
+  "-Cno-redzone=on"
+]
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+debug-assertions = false
+debug = true
+strip = "none"
+split-debuginfo = "packed"
+
 [target.'cfg(unix)'.dependencies]
-pipewire = "0.8.0"
+pipewire = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 
@@ -13,5 +54,14 @@ pipewire = "0.8.0"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-
-# reqwest = "0.12.22"
+whisper-rs = { version = "0.16", features = ["cuda", "vulkan"] }
+cccedict = "0.2.1"
+prettify_pinyin = "2.0.0"
+genanki-rs = "0.4"
+time = { version = "0.3.55", features = ["serde-well-known"] }
+egui = "0.36"
+eframe = "0.36"
+egui-toast = "0.22.0"
+rand = "0.10.3"
+reqwest = { version = "0.13.5", features = ["blocking"] }
+zip-extract = "0.4.1"
