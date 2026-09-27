@@ -5,7 +5,7 @@ use std::{
 
 use cccedict::cedict::CedictEntry;
 use eframe::egui::{self, RichText};
-use egui::{ComboBox, Margin, Visuals};
+use egui::{Color32, ComboBox, Margin, Visuals};
 use egui_toast::{Toast, ToastKind, ToastOptions, Toasts};
 
 use crate::anki::{CEDictEntry, Config};
@@ -42,6 +42,10 @@ fn format_pinyin(entry: &CedictEntry) -> String {
 }
 
 impl eframe::App for CaptionApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::from_rgba_premultiplied(0.0, 0.0, 0.0, 0.7).to_array()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
 

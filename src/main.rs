@@ -18,7 +18,7 @@ use cccedict::cedict::{Cedict, CedictEntry};
 use eframe::egui::{self};
 use egui::Align2;
 use egui_toast::Toasts;
-use window::{apply_compositor_position, focused_monitor_rect, WindowInfo};
+use window::{focused_monitor_rect, WindowInfo};
 
 use crate::anki::Config;
 
@@ -79,7 +79,14 @@ fn main() -> eframe::Result {
         sleep(Duration::from_secs(1));
 
         if let Some(w) = WindowInfo::current() {
-            if w.class == "firefox" || w.class == "firefox-nightly" {
+            if w.class == "firefox"
+                || w.class == "firefox-nightly"
+                || w.class == "MozillaWindowClass"
+            {
+                #[cfg(windows)]
+                break (0, w.pid);
+
+                #[cfg(unix)]
                 if let Some(id) = w.pipewire_node() {
                     break (id, w.pid);
                 }
@@ -125,12 +132,18 @@ fn main() -> eframe::Result {
         .with_always_on_top();
 
     if let Some(p) = pos {
-        apply_compositor_position(p);
+        #[cfg(unix)]
+        window::apply_compositor_position(p);
+
         viewport = viewport.with_position(p);
     }
 
     let options = eframe::NativeOptions {
         viewport,
+        stencil_buffer: 0,
+        depth_buffer: 0,
+        multisampling: 0,
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 
@@ -138,6 +151,9 @@ fn main() -> eframe::Result {
         "lange",
         options,
         Box::new(|cc| {
+            #[cfg(windows)]
+            window::enable_dwm_per_pixel_alpha(cc);
+
             let mut fonts = egui::FontDefinitions::default();
 
             if let Ok(bytes) =

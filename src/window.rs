@@ -97,6 +97,37 @@ impl WindowInfo {
         })
     }
 
+    #[cfg(windows)]
+    pub fn current() -> Option<Self> {
+        use windows::Win32::UI::WindowsAndMessaging::{GetClassNameA, GetForegroundWindow, GetWindowTextA, GetWindowThreadProcessId};
+
+        let x = unsafe { GetForegroundWindow() };
+
+        if x.0.is_null() {
+            return None;
+        }
+
+        let mut class = [0u8; 64];
+        let mut title = [0u8; 64];
+        let mut pid = 0;
+
+        unsafe {
+            GetClassNameA(x, &mut class);
+            GetWindowTextA(x, &mut title);
+            GetWindowThreadProcessId(x, Some(&mut pid));
+        }
+
+        let class = core::str::from_utf8(&class[..class.iter().position(|c| *c == 0)?]).ok()?.to_owned();
+        let title = core::str::from_utf8(&title[..title.iter().position(|c| *c == 0)?]).ok()?.to_owned();
+
+        Some(Self {
+            class,
+            title,
+            pid: pid as _,
+        })
+    }
+
+    #[cfg(unix)]
     pub fn current() -> Option<Self> {
         let desktop = std::env::var("XDG_CURRENT_DESKTOP")
             .unwrap_or_default()
@@ -120,6 +151,48 @@ impl WindowInfo {
     }
 }
 
+#[cfg(windows)]
+pub fn enable_dwm_per_pixel_alpha(cc: &eframe::CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::{BOOL, HWND};
+    use windows::Win32::Graphics::Dwm::{
+        DwmExtendFrameIntoClientArea, DwmEnableBlurBehindWindow, DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND,
+    };
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, HGDIOBJ};
+    use windows::Win32::UI::Controls::MARGINS;
+
+    let Ok(RawWindowHandle::Win32(handle)) = cc.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let hwnd = HWND(handle.hwnd.get() as *mut core::ffi::c_void);
+
+    // A region covering the whole window makes DWM honor the window's alpha.
+    let region = unsafe { CreateRectRgn(0, 0, -1, -1) };
+    let blur_behind = DWM_BLURBEHIND {
+        dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+        fEnable: BOOL(1),
+        hRgnBlur: region,
+        ..Default::default()
+    };
+    
+    unsafe {
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 });
+        let _ = DwmEnableBlurBehindWindow(hwnd, &blur_behind);
+        let _ = DeleteObject(HGDIOBJ(region.0));
+    }
+}
+
+#[cfg(windows)]
+pub fn focused_monitor_rect() -> Option<(f32, f32, f32, f32)> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+
+    Some((0.0, 0.0, w as f32, h as f32))
+}
+
+#[cfg(unix)]
 pub fn focused_monitor_rect() -> Option<(f32, f32, f32, f32)> {
     let desktop = std::env::var("XDG_CURRENT_DESKTOP")
         .unwrap_or_default()
@@ -133,6 +206,7 @@ pub fn focused_monitor_rect() -> Option<(f32, f32, f32, f32)> {
     focused_monitor_rect_hyprland().or_else(focused_monitor_rect_niri)
 }
 
+#[cfg(unix)]
 pub fn apply_compositor_position(pos: Pos2) {
     let desktop = std::env::var("XDG_CURRENT_DESKTOP")
         .unwrap_or_default()

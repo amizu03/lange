@@ -1,5 +1,12 @@
-use std::{io::Cursor, mem, sync::mpsc, thread};
+use crate::audio::{AudioChunk, VadBuffer};
+use std::{sync::mpsc, thread};
 
+// ── Unix / PipeWire ──────────────────────────────────────────────────────────
+
+#[cfg(unix)]
+use std::{io::Cursor, mem};
+
+#[cfg(unix)]
 use pipewire::{
     self as pw,
     spa::{
@@ -11,20 +18,20 @@ use pipewire::{
         pod::Pod,
     },
 };
+
+#[cfg(unix)]
 use pw::{context::ContextBox, main_loop::MainLoopBox, properties::properties};
 
-use crate::audio::{AudioChunk, VadBuffer};
-
+#[cfg(unix)]
 struct UserData {
-    format: spa::param::audio::AudioInfoRaw,
+    format: pipewire::spa::param::audio::AudioInfoRaw,
     vad: Option<VadBuffer>,
     tx: mpsc::SyncSender<AudioChunk>,
 }
 
+#[cfg(unix)]
 pub fn spawn_capture_thread(tx: mpsc::SyncSender<AudioChunk>, node_id: u64, pid: u64) {
     thread::spawn(move || {
-        // eprintln!("Attached to Firefox (node {node_id}). Transcribing...");
-
         let mainloop = MainLoopBox::new(None).expect("failed to create PipeWire main loop");
         let context = ContextBox::new(mainloop.loop_(), None).unwrap();
         let core = context.connect(None).unwrap();
@@ -69,7 +76,6 @@ pub fn spawn_capture_thread(tx: mpsc::SyncSender<AudioChunk>, node_id: u64, pid:
                 let rate = user_data.format.rate();
                 let channels = user_data.format.channels();
                 user_data.vad = Some(VadBuffer::new(rate, channels));
-                // eprintln!("capturing rate:{rate} channels:{channels} (VAD mode)");
             })
             .process(|stream, user_data| match stream.dequeue_buffer() {
                 None => {}
@@ -138,5 +144,156 @@ pub fn spawn_capture_thread(tx: mpsc::SyncSender<AudioChunk>, node_id: u64, pid:
             .unwrap();
 
         mainloop.run();
+    });
+}
+
+// ── Windows / WASAPI loopback ────────────────────────────────────────────────
+
+#[cfg(windows)]
+use std::{mem::offset_of, time::Duration};
+
+#[cfg(windows)]
+use windows::{
+    core::GUID,
+    Win32::{
+        Media::Audio::{
+            eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator,
+            MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+            WAVEFORMATEXTENSIBLE,
+        },
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
+        },
+    },
+};
+
+// WAVEFORMATEX format tags
+#[cfg(windows)]
+const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
+#[cfg(windows)]
+const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+
+// {00000003-0000-0010-8000-00aa00389b71}
+#[cfg(windows)]
+const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: GUID = GUID {
+    data1: 0x0000_0003,
+    data2: 0x0000,
+    data3: 0x0010,
+    data4: [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71],
+};
+
+/// Capture the system render device in loopback mode (all audio playing on the
+/// default output). `_node_id` and `_pid` are accepted for API compatibility
+/// but not used on Windows.
+#[cfg(windows)]
+pub fn spawn_capture_thread(tx: mpsc::SyncSender<AudioChunk>, _node_id: u64, _pid: u64) {
+    thread::spawn(move || unsafe {
+        // COM must be initialised on this thread before calling any WASAPI API.
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .expect("CoCreateInstance IMMDeviceEnumerator");
+
+        // Loopback capture uses the *render* endpoint, not a capture endpoint.
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .expect("GetDefaultAudioEndpoint");
+
+        let audio_client: IAudioClient =
+            device.Activate(CLSCTX_ALL, None).expect("Activate IAudioClient");
+
+        // Use the device's own mix format so we always get a supported layout.
+        let mix_fmt_ptr = audio_client.GetMixFormat().expect("GetMixFormat");
+
+        let rate = (*mix_fmt_ptr).nSamplesPerSec;
+        let channels = (*mix_fmt_ptr).nChannels as u32;
+        let bits = (*mix_fmt_ptr).wBitsPerSample;
+        let tag = (*mix_fmt_ptr).wFormatTag;
+
+        let is_float = tag == WAVE_FORMAT_IEEE_FLOAT
+            || (tag == WAVE_FORMAT_EXTENSIBLE && {
+                let ext = mix_fmt_ptr as *const WAVEFORMATEXTENSIBLE;
+                let guid = ((ext.addr() + offset_of!(WAVEFORMATEXTENSIBLE, SubFormat)) as *const GUID).read_unaligned();
+                guid == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+            });
+
+        audio_client
+            .Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                2_000_000, // 200 ms buffer in 100-ns units
+                0,
+                mix_fmt_ptr,
+                None,
+            )
+            .expect("IAudioClient::Initialize");
+
+        CoTaskMemFree(Some(mix_fmt_ptr as *const _));
+
+        let capture_client: IAudioCaptureClient =
+            audio_client.GetService().expect("GetService IAudioCaptureClient");
+
+        audio_client.Start().expect("IAudioClient::Start");
+
+        let mut vad = VadBuffer::new(rate, channels);
+
+        loop {
+            let packet_size = match capture_client.GetNextPacketSize() {
+                Ok(n) => n,
+                Err(_) => break,
+            };
+
+            if packet_size == 0 {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+
+            let mut data_ptr = std::ptr::null_mut::<u8>();
+            let mut num_frames = 0u32;
+            let mut flags = 0u32;
+
+            if capture_client
+                .GetBuffer(&mut data_ptr, &mut num_frames, &mut flags, None, None)
+                .is_err()
+            {
+                break;
+            }
+
+            const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
+            let n_samples = num_frames as usize * channels as usize;
+
+            let samples: Vec<f32> = if flags & AUDCLNT_BUFFERFLAGS_SILENT != 0 {
+                vec![0.0; n_samples]
+            } else if is_float && bits == 32 {
+                let ptr = data_ptr as *const f32;
+                std::slice::from_raw_parts(ptr, n_samples).to_vec()
+            } else if bits == 16 {
+                let ptr = data_ptr as *const i16;
+                std::slice::from_raw_parts(ptr, n_samples)
+                    .iter()
+                    .map(|&s| s as f32 / 32_768.0)
+                    .collect()
+            } else if bits == 32 {
+                // PCM 32-bit integer
+                let ptr = data_ptr as *const i32;
+                std::slice::from_raw_parts(ptr, n_samples)
+                    .iter()
+                    .map(|&s| s as f32 / 2_147_483_648.0)
+                    .collect()
+            } else {
+                vec![0.0; n_samples]
+            };
+
+            let _ = capture_client.ReleaseBuffer(num_frames);
+
+            for chunk in vad.push_samples(&samples) {
+                let _ = tx.try_send(AudioChunk {
+                    samples: chunk,
+                    rate,
+                    channels,
+                });
+            }
+        }
     });
 }
