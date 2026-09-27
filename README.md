@@ -8,8 +8,8 @@
 MIT [LICENSE](LICENSE)
 
 ## Details
-- Currently only supports wayland hyprland/niri/sway/i3
-- Windows support planned in the future
+- Currently only supports windows + wayland hyprland/niri/sway/i3
+- Uses vulkan for maximum compatibility
 
 ## Screenshots
 ### Main Page
